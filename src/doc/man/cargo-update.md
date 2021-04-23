@@ -11,8 +11,8 @@ cargo-update - Update dependencies as recorded in the local lock file
 ## DESCRIPTION
 
 This command will update dependencies in the `Cargo.lock` file to the latest
-version. It requires that the `Cargo.lock` file already exists as generated
-by commands such as {{man "cargo-build" 1}} or {{man "cargo-generate-lockfile" 1}}.
+version. If the `Cargo.lock` file does not exist, it will be created with the
+latest available versions.
 
 ## OPTIONS
 
@@ -42,6 +42,13 @@ Cannot be used with `--precise`.
 When used with `-p`, allows you to specify a specific version number to set
 the package to. If the package comes from a git repository, this can be a git
 revision (such as a SHA hash or tag).
+{{/option}}
+
+{{#option "`-w`" "`--workspace`" }}
+Attempt to update only packages defined in the workspace. Other packages
+are updated only if they don't already exist in the lockfile. This
+option is useful for updating `Cargo.lock` after you've changed version
+numbers in `Cargo.toml`.
 {{/option}}
 
 {{#option "`--dry-run`" }}

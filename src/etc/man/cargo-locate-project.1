@@ -10,11 +10,27 @@ cargo\-locate\-project \- Print a JSON representation of a Cargo.toml file's loc
 .SH "DESCRIPTION"
 This command will print a JSON object to stdout with the full path to the
 \fBCargo.toml\fR manifest.
-.sp
-See also \fBcargo\-metadata\fR(1) which is capable of returning the path to a
-workspace root.
 .SH "OPTIONS"
+.sp
+\fB\-\-workspace\fR
+.RS 4
+Locate the \fBCargo.toml\fR at the root of the workspace, as opposed to the current
+workspace member.
+.RE
 .SS "Display Options"
+.sp
+\fB\-\-message\-format\fR \fIfmt\fR
+.RS 4
+The representation in which to print the project location. Valid values:
+.sp
+.RS 4
+\h'-04'\(bu\h'+02'\fBjson\fR (default): JSON object with the path under the key "root".
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+02'\fBplain\fR: Just the path.
+.RE
+.RE
 .sp
 \fB\-v\fR, 
 \fB\-\-verbose\fR
@@ -65,7 +81,7 @@ Path to the \fBCargo.toml\fR file. By default, Cargo searches for the
 If Cargo has been installed with rustup, and the first argument to \fBcargo\fR
 begins with \fB+\fR, it will be interpreted as a rustup toolchain name (such
 as \fB+stable\fR or \fB+nightly\fR).
-See the \fIrustup documentation\fR <https://github.com/rust\-lang/rustup/>
+See the \fIrustup documentation\fR <https://rust\-lang.github.io/rustup/overrides.html>
 for more information about how toolchain overrides work.
 .RE
 .sp

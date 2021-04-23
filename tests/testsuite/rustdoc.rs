@@ -56,14 +56,14 @@ fn rustdoc_foo_with_bar_dependency() {
         .file(
             "Cargo.toml",
             r#"
-            [package]
-            name = "foo"
-            version = "0.0.1"
-            authors = []
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
 
-            [dependencies.bar]
-            path = "../bar"
-        "#,
+                [dependencies.bar]
+                path = "../bar"
+            "#,
         )
         .file("src/lib.rs", "extern crate bar; pub fn foo() {}")
         .build();
@@ -97,14 +97,14 @@ fn rustdoc_only_bar_dependency() {
         .file(
             "Cargo.toml",
             r#"
-            [package]
-            name = "foo"
-            version = "0.0.1"
-            authors = []
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
 
-            [dependencies.bar]
-            path = "../bar"
-        "#,
+                [dependencies.bar]
+                path = "../bar"
+            "#,
         )
         .file("src/main.rs", "extern crate bar; fn main() { bar::baz() }")
         .build();
@@ -157,14 +157,14 @@ fn features() {
         .file(
             "Cargo.toml",
             r#"
-            [package]
-            name = "foo"
-            version = "0.0.1"
-            authors = []
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
 
-            [features]
-            quux = []
-        "#,
+                [features]
+                quux = []
+            "#,
         )
         .file("src/lib.rs", "")
         .build();
@@ -180,15 +180,15 @@ fn proc_macro_crate_type() {
         .file(
             "Cargo.toml",
             r#"
-            [package]
-            name = "foo"
-            version = "0.0.1"
-            authors = []
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
 
-            [lib]
-            proc-macro = true
+                [lib]
+                proc-macro = true
 
-        "#,
+            "#,
         )
         .file("src/lib.rs", "")
         .build();
@@ -224,5 +224,25 @@ fn rustdoc_target() {
 [FINISHED] dev [unoptimized + debuginfo] target(s) in [..]",
             target = cross_compile::alternate()
         ))
+        .run();
+}
+
+#[cargo_test]
+fn fail_with_glob() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "pub fn bar() {  break_the_build(); }")
+        .build();
+
+    p.cargo("rustdoc -p '*z'")
+        .with_status(101)
+        .with_stderr("[ERROR] Glob patterns on package selection are not supported.")
         .run();
 }

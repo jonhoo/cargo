@@ -127,6 +127,8 @@ The output has the following format:
                        This property is not included if no required features are set.
                     */
                     "required-features": ["feat1"],
+                    /* Whether the target should be documented by `cargo doc`. */
+                    "doc": true,
                     /* Whether or not this target has doc tests enabled, and
                        the target is compatible with doc testing.
                     */
@@ -182,6 +184,10 @@ The output has the following format:
             "readme": "README.md",
             /* The repository value from the manifest or null if not specified. */
             "repository": "https://github.com/rust-lang/cargo",
+            /* The homepage value from the manifest or null if not specified. */
+            "homepage": "https://rust-lang.org",
+            /* The documentation value from the manifest or null if not specified. */
+            "documentation": "https://doc.rust-lang.org/stable/std",
             /* The default edition of the package.
                Note that individual targets may have different editions.
             */

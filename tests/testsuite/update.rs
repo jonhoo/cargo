@@ -448,8 +448,10 @@ fn update_precise_first_run() {
         }
       ],
       "description": null,
+      "documentation": null,
       "edition": "2015",
       "features": {},
+      "homepage": null,
       "id": "bar 0.0.1 (path+file://[..]/foo)",
       "keywords": [],
       "license": null,
@@ -467,6 +469,7 @@ fn update_precise_first_run() {
           "crate_types": [
             "lib"
           ],
+          "doc": true,
           "doctest": true,
           "test": true,
           "edition": "2015",
@@ -484,8 +487,10 @@ fn update_precise_first_run() {
       "categories": [],
       "dependencies": [],
       "description": null,
+      "documentation": null,
       "edition": "2015",
       "features": {},
+      "homepage": null,
       "id": "serde 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
       "keywords": [],
       "license": null,
@@ -503,6 +508,7 @@ fn update_precise_first_run() {
           "crate_types": [
             "lib"
           ],
+          "doc": true,
           "doctest": true,
           "edition": "2015",
           "kind": [
@@ -644,4 +650,29 @@ fn dry_run_update() {
         .run();
     let new_lockfile = p.read_lockfile();
     assert_eq!(old_lockfile, new_lockfile)
+}
+
+#[cargo_test]
+fn workspace_only() {
+    let p = project().file("src/main.rs", "fn main() {}").build();
+    p.cargo("generate-lockfile").run();
+    let lock1 = p.read_lockfile();
+
+    p.change_file(
+        "Cargo.toml",
+        r#"
+            [package]
+            name = "foo"
+            authors = []
+            version = "0.0.2"
+        "#,
+    );
+    p.cargo("update --workspace").run();
+    let lock2 = p.read_lockfile();
+
+    assert_ne!(lock1, lock2);
+    assert!(lock1.contains("0.0.1"));
+    assert!(lock2.contains("0.0.2"));
+    assert!(!lock1.contains("0.0.2"));
+    assert!(!lock2.contains("0.0.1"));
 }

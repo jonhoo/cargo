@@ -11,11 +11,20 @@ DESCRIPTION
        This command will print a JSON object to stdout with the full path to
        the Cargo.toml manifest.
 
-       See also cargo-metadata(1) which is capable of returning the path to a
-       workspace root.
-
 OPTIONS
+       --workspace
+           Locate the Cargo.toml at the root of the workspace, as opposed to
+           the current workspace member.
+
    Display Options
+       --message-format fmt
+           The representation in which to print the project location. Valid
+           values:
+
+           o  json (default): JSON object with the path under the key "root".
+
+           o  plain: Just the path.
+
        -v, --verbose
            Use verbose output. May be specified twice for "very verbose" output
            which includes extra output such as dependency warnings and build
@@ -48,8 +57,8 @@ OPTIONS
            If Cargo has been installed with rustup, and the first argument to
            cargo begins with +, it will be interpreted as a rustup toolchain
            name (such as +stable or +nightly). See the rustup documentation
-           <https://github.com/rust-lang/rustup/> for more information about
-           how toolchain overrides work.
+           <https://rust-lang.github.io/rustup/overrides.html> for more
+           information about how toolchain overrides work.
 
        -h, --help
            Prints help information.

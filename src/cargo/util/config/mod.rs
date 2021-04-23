@@ -63,7 +63,7 @@ use std::str::FromStr;
 use std::sync::Once;
 use std::time::Instant;
 
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, format_err};
 use curl::easy::Easy;
 use lazycell::LazyCell;
 use serde::Deserialize;
@@ -176,6 +176,7 @@ pub struct Config {
     build_config: LazyCell<CargoBuildConfig>,
     target_cfgs: LazyCell<Vec<(String, TargetCfgConfig)>>,
     doc_extern_map: LazyCell<RustdocExternMap>,
+    progress_config: ProgressConfig,
 }
 
 impl Config {
@@ -247,6 +248,7 @@ impl Config {
             build_config: LazyCell::new(),
             target_cfgs: LazyCell::new(),
             doc_extern_map: LazyCell::new(),
+            progress_config: ProgressConfig::default(),
         }
     }
 
@@ -459,8 +461,8 @@ impl Config {
 
     /// Get a configuration value by key.
     ///
-    /// This does NOT look at environment variables, the caller is responsible
-    /// for that.
+    /// This does NOT look at environment variables. See `get_cv_with_env` for
+    /// a variant that supports environment variables.
     fn get_cv(&self, key: &ConfigKey) -> CargoResult<Option<ConfigValue>> {
         log::trace!("get cv {:?}", key);
         let vals = self.values()?;
@@ -720,13 +722,9 @@ impl Config {
         let extra_verbose = verbose >= 2;
         let verbose = verbose != 0;
 
-        #[derive(Deserialize, Default)]
-        struct TermConfig {
-            verbose: Option<bool>,
-            color: Option<String>,
-        }
-
-        // Ignore errors in the configuration files.
+        // Ignore errors in the configuration files. We don't want basic
+        // commands like `cargo version` to error out due to config file
+        // problems.
         let term = self.get::<TermConfig>("term").unwrap_or_default();
 
         let color = color.or_else(|| term.color.as_deref());
@@ -754,6 +752,7 @@ impl Config {
 
         self.shell().set_verbosity(verbosity);
         self.shell().set_color_choice(color)?;
+        self.progress_config = term.progress.unwrap_or_default();
         self.extra_verbose = extra_verbose;
         self.frozen = frozen;
         self.locked = locked;
@@ -1192,6 +1191,20 @@ impl Config {
             .try_borrow_with(|| Ok(self.get::<CargoBuildConfig>("build")?))
     }
 
+    pub fn progress_config(&self) -> &ProgressConfig {
+        &self.progress_config
+    }
+
+    /// This is used to validate the `term` table has valid syntax.
+    ///
+    /// This is necessary because loading the term settings happens very
+    /// early, and in some situations (like `cargo version`) we don't want to
+    /// fail if there are problems with the config file.
+    pub fn validate_term_config(&self) -> CargoResult<()> {
+        drop(self.get::<TermConfig>("term")?);
+        Ok(())
+    }
+
     /// Returns a list of [target.'cfg()'] tables.
     ///
     /// The list is sorted by the table name.
@@ -1607,7 +1620,11 @@ pub fn homedir(cwd: &Path) -> Option<PathBuf> {
     ::home::cargo_home_with_cwd(cwd).ok()
 }
 
-pub fn save_credentials(cfg: &Config, token: String, registry: Option<String>) -> CargoResult<()> {
+pub fn save_credentials(
+    cfg: &Config,
+    token: Option<String>,
+    registry: Option<&str>,
+) -> CargoResult<()> {
     // If 'credentials.toml' exists, we should write to that, otherwise
     // use the legacy 'credentials'. There's no need to print the warning
     // here, because it would already be printed at load time.
@@ -1624,25 +1641,6 @@ pub fn save_credentials(cfg: &Config, token: String, registry: Option<String>) -
         cfg.home_path.create_dir()?;
         cfg.home_path
             .open_rw(filename, cfg, "credentials' config file")?
-    };
-
-    let (key, mut value) = {
-        let key = "token".to_string();
-        let value = ConfigValue::String(token, Definition::Path(file.path().to_path_buf()));
-        let mut map = HashMap::new();
-        map.insert(key, value);
-        let table = CV::Table(map, Definition::Path(file.path().to_path_buf()));
-
-        if let Some(registry) = registry.clone() {
-            let mut map = HashMap::new();
-            map.insert(registry, table);
-            (
-                "registries".into(),
-                CV::Table(map, Definition::Path(file.path().to_path_buf())),
-            )
-        } else {
-            ("registry".into(), table)
-        }
     };
 
     let mut contents = String::new();
@@ -1664,13 +1662,55 @@ pub fn save_credentials(cfg: &Config, token: String, registry: Option<String>) -
             .insert("registry".into(), map.into());
     }
 
-    if registry.is_some() {
-        if let Some(table) = toml.as_table_mut().unwrap().remove("registries") {
-            let v = CV::from_toml(Definition::Path(file.path().to_path_buf()), table)?;
-            value.merge(v, false)?;
+    if let Some(token) = token {
+        // login
+        let (key, mut value) = {
+            let key = "token".to_string();
+            let value = ConfigValue::String(token, Definition::Path(file.path().to_path_buf()));
+            let mut map = HashMap::new();
+            map.insert(key, value);
+            let table = CV::Table(map, Definition::Path(file.path().to_path_buf()));
+
+            if let Some(registry) = registry {
+                let mut map = HashMap::new();
+                map.insert(registry.to_string(), table);
+                (
+                    "registries".into(),
+                    CV::Table(map, Definition::Path(file.path().to_path_buf())),
+                )
+            } else {
+                ("registry".into(), table)
+            }
+        };
+
+        if registry.is_some() {
+            if let Some(table) = toml.as_table_mut().unwrap().remove("registries") {
+                let v = CV::from_toml(Definition::Path(file.path().to_path_buf()), table)?;
+                value.merge(v, false)?;
+            }
+        }
+        toml.as_table_mut().unwrap().insert(key, value.into_toml());
+    } else {
+        // logout
+        let table = toml.as_table_mut().unwrap();
+        if let Some(registry) = registry {
+            if let Some(registries) = table.get_mut("registries") {
+                if let Some(reg) = registries.get_mut(registry) {
+                    let rtable = reg.as_table_mut().ok_or_else(|| {
+                        format_err!("expected `[registries.{}]` to be a table", registry)
+                    })?;
+                    rtable.remove("token");
+                }
+            }
+        } else {
+            if let Some(registry) = table.get_mut("registry") {
+                let reg_table = registry
+                    .as_table_mut()
+                    .ok_or_else(|| format_err!("expected `[registry]` to be a table"))?;
+                reg_table.remove("token");
+            }
         }
     }
-    toml.as_table_mut().unwrap().insert(key, value.into_toml());
 
     let contents = toml.to_string();
     file.seek(SeekFrom::Start(0))?;
@@ -1778,6 +1818,94 @@ pub struct CargoBuildConfig {
     pub out_dir: Option<ConfigRelativePath>,
 }
 
+#[derive(Deserialize, Default)]
+struct TermConfig {
+    verbose: Option<bool>,
+    color: Option<String>,
+    #[serde(default)]
+    #[serde(deserialize_with = "progress_or_string")]
+    progress: Option<ProgressConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ProgressConfig {
+    pub when: ProgressWhen,
+    pub width: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProgressWhen {
+    Auto,
+    Never,
+    Always,
+}
+
+impl Default for ProgressWhen {
+    fn default() -> ProgressWhen {
+        ProgressWhen::Auto
+    }
+}
+
+fn progress_or_string<'de, D>(deserializer: D) -> Result<Option<ProgressConfig>, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    struct ProgressVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for ProgressVisitor {
+        type Value = Option<ProgressConfig>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a string (\"auto\" or \"never\") or a table")
+        }
+
+        fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            match s {
+                "auto" => Ok(Some(ProgressConfig {
+                    when: ProgressWhen::Auto,
+                    width: None,
+                })),
+                "never" => Ok(Some(ProgressConfig {
+                    when: ProgressWhen::Never,
+                    width: None,
+                })),
+                "always" => Err(E::custom("\"always\" progress requires a `width` key")),
+                _ => Err(E::unknown_variant(s, &["auto", "never"])),
+            }
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::de::Deserializer<'de>,
+        {
+            let pc = ProgressConfig::deserialize(deserializer)?;
+            if let ProgressConfig {
+                when: ProgressWhen::Always,
+                width: None,
+            } = pc
+            {
+                return Err(serde::de::Error::custom(
+                    "\"always\" progress requires a `width` key",
+                ));
+            }
+            Ok(Some(pc))
+        }
+    }
+
+    deserializer.deserialize_option(ProgressVisitor)
+}
+
 /// A type to deserialize a list of strings from a toml file.
 ///
 /// Supports deserializing either a whitespace-separated list of arguments in a
@@ -1788,7 +1916,7 @@ pub struct CargoBuildConfig {
 /// a = 'a b c'
 /// b = ['a', 'b', 'c']
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct StringList(Vec<String>);
 
 impl StringList {

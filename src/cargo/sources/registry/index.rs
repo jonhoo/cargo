@@ -68,13 +68,14 @@
 
 use crate::core::dependency::Dependency;
 use crate::core::{PackageId, SourceId, Summary};
-use crate::sources::registry::{RegistryData, RegistryPackage};
+use crate::sources::registry::{make_dep_index_path, RegistryData, RegistryPackage};
 use crate::util::interning::InternedString;
 use crate::util::paths;
 use crate::util::{internal, CargoResult, Config, Filesystem, ToSemver};
 use log::info;
 use semver::{Version, VersionReq};
-use std::collections::{HashMap, HashSet};
+use std::borrow::Cow;
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::str;
@@ -111,6 +112,9 @@ impl<'s> Iterator for UncanonicalizedIter<'s> {
             return None;
         }
 
+        // TODO:
+        // This implementation can currently generate paths like en/v-/env_logger,
+        // which doesn't _seem_ like a useful candidate to test?
         let ret = Some(
             self.input
                 .chars()
@@ -270,6 +274,9 @@ impl<'cfg> RegistryIndex<'cfg> {
         'a: 'b,
     {
         let source_id = self.source_id;
+        let config = self.config;
+        let namespaced_features = self.config.cli_unstable().namespaced_features;
+        let weak_dep_features = self.config.cli_unstable().weak_dep_features;
 
         // First up actually parse what summaries we have available. If Cargo
         // has run previously this will parse a Cargo-specific cache file rather
@@ -288,12 +295,19 @@ impl<'cfg> RegistryIndex<'cfg> {
             .versions
             .iter_mut()
             .filter_map(move |(k, v)| if req.matches(k) { Some(v) } else { None })
-            .filter_map(move |maybe| match maybe.parse(raw_data, source_id) {
-                Ok(summary) => Some(summary),
-                Err(e) => {
-                    info!("failed to parse `{}` registry package: {}", name, e);
-                    None
-                }
+            .filter_map(
+                move |maybe| match maybe.parse(config, raw_data, source_id) {
+                    Ok(summary) => Some(summary),
+                    Err(e) => {
+                        info!("failed to parse `{}` registry package: {}", name, e);
+                        None
+                    }
+                },
+            )
+            .filter(move |is| {
+                is.summary
+                    .unstable_gate(namespaced_features, weak_dep_features)
+                    .is_ok()
             }))
     }
 
@@ -319,16 +333,10 @@ impl<'cfg> RegistryIndex<'cfg> {
 
         // See module comment in `registry/mod.rs` for why this is structured
         // the way it is.
-        let fs_name = name
-            .chars()
-            .flat_map(|c| c.to_lowercase())
-            .collect::<String>();
-        let raw_path = match fs_name.len() {
-            1 => format!("1/{}", fs_name),
-            2 => format!("2/{}", fs_name),
-            3 => format!("3/{}/{}", &fs_name[..1], fs_name),
-            _ => format!("{}/{}/{}", &fs_name[0..2], &fs_name[2..4], fs_name),
-        };
+        let raw_path = make_dep_index_path(&name);
+        let raw_path = raw_path
+            .to_str()
+            .expect("path was generated from utf-8 name");
 
         // Attempt to handle misspellings by searching for a chain of related
         // names to the original `raw_path` name. Only return summaries
@@ -355,6 +363,22 @@ impl<'cfg> RegistryIndex<'cfg> {
         // empty `Summaries` list.
         self.summaries_cache.insert(name, Summaries::default());
         Ok(self.summaries_cache.get_mut(&name).unwrap())
+    }
+
+    pub fn update_index_file(
+        &mut self,
+        pkg: InternedString,
+        load: &mut dyn RegistryData,
+    ) -> CargoResult<bool> {
+        let path = load.index_path();
+        let root = load.assert_index_locked(path).to_path_buf();
+        let path = make_dep_index_path(&pkg);
+        if load.update_index_file(&root, &path)? {
+            self.summaries_cache.remove(&pkg);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     pub fn query_inner(
@@ -445,6 +469,178 @@ impl<'cfg> RegistryIndex<'cfg> {
             .any(|summary| summary.yanked);
         Ok(found)
     }
+
+    pub fn prefetch(
+        &mut self,
+        deps: &mut dyn ExactSizeIterator<Item = Cow<'_, Dependency>>,
+        yanked_whitelist: &HashSet<PackageId>,
+        load: &mut dyn RegistryData,
+    ) -> CargoResult<()> {
+        // For some registry backends, it's expensive to fetch each individual index file, and the
+        // process can be sped up significantly by fetching many index files in advance. For
+        // backends where that is the case, we do an approximate walk of all transitive
+        // dependencies and fetch their index file in a pipelined fashion. This means that by the
+        // time the individual loads (see load.load in Summary::parse), those should all be quite
+        // fast.
+        //
+        // We have the advantage here of being able to play fast and loose with the exact
+        // dependency requirements. It's fine if we fetch a bit too much, since the incremental
+        // cost of each index file is small.
+        if self.config.offline() || !load.start_prefetch()? {
+            // Backend does not support prefetching.
+            return Ok(());
+        }
+
+        load.prepare()?;
+
+        let root = load.assert_index_locked(&self.path);
+        let cache_root = root.join(".cache");
+        let index_version = load.current_version();
+
+        log::debug!("prefetching transitive dependencies");
+
+        // Since we allow dependency cycles in crates, we may end up walking in circles forever if
+        // we just iteratively handled each candidate as we discovered it. The real resolver is
+        // smart about how it avoids walking endlessly in cycles, but in this simple greedy
+        // resolver we play fast-and-loose, and instead just keep track of dependencies we have
+        // already looked at and just don't walk them again.
+        let mut walked = HashSet::new();
+
+        // Seed the prefetching with everything from the lockfile.
+        //
+        // This allows us to start downloads of a tonne of index files we otherwise would not
+        // discover until much later, which saves us many RTTs. On a dependency graph like that of
+        // cargo itself, it cut my download time to 1/5th.
+        //
+        // Note that the greedy fetch below actually ends up fetching additional dependencies even
+        // if nothing has change in the dependency graph. This is because the lockfile contains
+        // only the dependencies we actually _used_ last time. Thus, any dependencies that the
+        // greedy algorithm (erroneously) thinks we need will still need to be queued for download.
+        for pkg in yanked_whitelist {
+            if pkg.source_id() == self.source_id {
+                let name = pkg.name();
+                log::trace!("prefetching from lockfile: {}", name);
+                load.prefetch(root, &make_dep_index_path(&*name), name, None, true)?;
+            }
+        }
+
+        // Also seed the prefetching with the root dependencies.
+        //
+        // It's important that we do this _before_ we handle any responses to downloads,
+        // since all the prefetches from above are marked as being transitive. We need to mark
+        // direct depenendencies as such before we start iterating, otherwise we will erroneously
+        // ignore their dev-dependencies when they're yielded by next_prefetched.
+        for dep in deps {
+            walked.insert((dep.package_name(), dep.version_req().clone()));
+            log::trace!(
+                "prefetching from direct dependencies: {}",
+                dep.package_name()
+            );
+
+            // NOTE: We do not use UncanonicalizedIter here or below because if the user gave a
+            // misspelling, it's fine if we don't prefetch their misspelling. The resolver will be
+            // a bit slower, but then give them an error.
+            load.prefetch(
+                root,
+                &make_dep_index_path(&*dep.package_name()),
+                dep.package_name(),
+                Some(dep.version_req()),
+                false,
+            )?;
+        }
+
+        // Now, continuously iterate by walking dependencies we've loaded and fetching the index
+        // entry for _their_ dependencies.
+        while let Some(fetched) = load.next_prefetched()? {
+            log::trace!("got prefetched {}", fetched.name);
+            let summaries = if let Some(s) = self.summaries_cache.get_mut(&fetched.name()) {
+                s
+            } else {
+                let summaries = Summaries::parse(
+                    index_version.as_deref(),
+                    root,
+                    &cache_root,
+                    fetched.path(),
+                    self.source_id,
+                    load,
+                    self.config,
+                )?;
+
+                let summaries = if let Some(s) = summaries { s } else { continue };
+
+                match self.summaries_cache.entry(fetched.name()) {
+                    Entry::Vacant(v) => v.insert(summaries),
+                    Entry::Occupied(mut o) => {
+                        let _ = o.insert(summaries);
+                        o.into_mut()
+                    }
+                }
+            };
+
+            for (version, maybe_summary) in &mut summaries.versions {
+                log::trace!("consider prefetching version {}", version);
+                if !fetched.version_reqs().any(|vr| vr.matches(&version)) {
+                    // The crate that pulled in this crate as a dependency did not care about this
+                    // particular version, so we don't need to walk its dependencies.
+                    //
+                    // We _could_ simply walk every transitive dependency, and it probably wouldn't
+                    // be _that_ bad. But over time it'd mean that a bunch of index files are
+                    // pulled down even though they're no longer used anywhere in the dependency
+                    // closure. This, again, probably doesn't matter, and it would make the logic
+                    // here _much_ simpler, but for now we try to do better.
+                    //
+                    // Note that another crate in the dependency closure might still pull in this
+                    // version because that crate has a different set of requirements.
+                    continue;
+                }
+
+                let summary =
+                    maybe_summary.parse(self.config, &summaries.raw_data, self.source_id)?;
+
+                if summary.yanked {
+                    // This version has been yanked, so let's not even go there.
+                    continue;
+                }
+
+                for dep in summary.summary.dependencies() {
+                    if dep.source_id() != self.source_id {
+                        // This dependency lives in a different source, so we won't be prefetching
+                        // anything from there anyway.
+                        //
+                        // It is _technically_ possible that a dependency in a different source
+                        // then pulls in a dependency from _this_ source again, but we'll let that
+                        // go to the slow path.
+                        continue;
+                    }
+
+                    // Don't pull in dev-dependencies of transitive dependencies.
+                    if fetched.is_transitive && !dep.is_transitive() {
+                        log::trace!(
+                            "not prefetching transitive dev-dependency {}",
+                            dep.package_name()
+                        );
+                        continue;
+                    }
+
+                    if !walked.insert((dep.package_name(), dep.version_req().clone())) {
+                        // We've already walked this dependency -- no need to do so again.
+                        continue;
+                    }
+
+                    log::trace!("prefetching transitive dependency {}", dep.package_name());
+                    load.prefetch(
+                        root,
+                        &make_dep_index_path(&*dep.package_name()),
+                        dep.package_name(),
+                        Some(dep.version_req()),
+                        true,
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Summaries {
@@ -519,7 +715,7 @@ impl Summaries {
                 // allow future cargo implementations to break the
                 // interpretation of each line here and older cargo will simply
                 // ignore the new lines.
-                let summary = match IndexSummary::parse(line, source_id) {
+                let summary = match IndexSummary::parse(config, line, source_id) {
                     Ok(summary) => summary,
                     Err(e) => {
                         log::info!("failed to parse {:?} registry package: {}", relative, e);
@@ -682,12 +878,17 @@ impl MaybeIndexSummary {
     /// Does nothing if this is already `Parsed`, and otherwise the `raw_data`
     /// passed in is sliced with the bounds in `Unparsed` and then actually
     /// parsed.
-    fn parse(&mut self, raw_data: &[u8], source_id: SourceId) -> CargoResult<&IndexSummary> {
+    fn parse(
+        &mut self,
+        config: &Config,
+        raw_data: &[u8],
+        source_id: SourceId,
+    ) -> CargoResult<&IndexSummary> {
         let (start, end) = match self {
             MaybeIndexSummary::Unparsed { start, end } => (*start, *end),
             MaybeIndexSummary::Parsed(summary) => return Ok(summary),
         };
-        let summary = IndexSummary::parse(&raw_data[start..end], source_id)?;
+        let summary = IndexSummary::parse(config, &raw_data[start..end], source_id)?;
         *self = MaybeIndexSummary::Parsed(summary);
         match self {
             MaybeIndexSummary::Unparsed { .. } => unreachable!(),
@@ -707,7 +908,7 @@ impl IndexSummary {
     /// a package.
     ///
     /// The `line` provided is expected to be valid JSON.
-    fn parse(line: &[u8], source_id: SourceId) -> CargoResult<IndexSummary> {
+    fn parse(config: &Config, line: &[u8], source_id: SourceId) -> CargoResult<IndexSummary> {
         let RegistryPackage {
             name,
             vers,
@@ -723,8 +924,7 @@ impl IndexSummary {
             .into_iter()
             .map(|dep| dep.into_dep(source_id))
             .collect::<CargoResult<Vec<_>>>()?;
-        let namespaced_features = false;
-        let mut summary = Summary::new(pkgid, deps, &features, links, namespaced_features)?;
+        let mut summary = Summary::new(config, pkgid, deps, &features, links)?;
         summary.set_checksum(cksum);
         Ok(IndexSummary {
             summary,

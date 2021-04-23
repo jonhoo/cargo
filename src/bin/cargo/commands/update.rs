@@ -1,11 +1,13 @@
 use crate::command_prelude::*;
 
 use cargo::ops::{self, UpdateOptions};
+use cargo::util::print_available_packages;
 
 pub fn cli() -> App {
     subcommand("update")
         .about("Update dependencies as recorded in the local lock file")
         .arg(opt("quiet", "No output printed to stdout").short("q"))
+        .arg(opt("workspace", "Only update the workspace packages").short("w"))
         .arg_package_spec_simple("Package to update")
         .arg(opt(
             "aggressive",
@@ -20,11 +22,16 @@ pub fn cli() -> App {
 pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     let ws = args.workspace(config)?;
 
+    if args.is_present_with_zero_values("package") {
+        print_available_packages(&ws)?;
+    }
+
     let update_opts = UpdateOptions {
         aggressive: args.is_present("aggressive"),
         precise: args.value_of("precise"),
         to_update: values(args, "package"),
         dry_run: args.is_present("dry-run"),
+        workspace: args.is_present("workspace"),
         config,
     };
     ops::update_lockfile(&ws, &update_opts)?;

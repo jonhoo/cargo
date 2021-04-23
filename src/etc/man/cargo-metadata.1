@@ -124,6 +124,8 @@ The output has the following format:
                        This property is not included if no required features are set.
                     */
                     "required\-features": ["feat1"],
+                    /* Whether the target should be documented by `cargo doc`. */
+                    "doc": true,
                     /* Whether or not this target has doc tests enabled, and
                        the target is compatible with doc testing.
                     */
@@ -179,6 +181,10 @@ The output has the following format:
             "readme": "README.md",
             /* The repository value from the manifest or null if not specified. */
             "repository": "https://github.com/rust\-lang/cargo",
+            /* The homepage value from the manifest or null if not specified. */
+            "homepage": "https://rust\-lang.org",
+            /* The documentation value from the manifest or null if not specified. */
+            "documentation": "https://doc.rust\-lang.org/stable/std",
             /* The default edition of the package.
                Note that individual targets may have different editions.
             */
@@ -407,7 +413,7 @@ May also be specified with the \fBnet.offline\fR \fIconfig value\fR <https://doc
 If Cargo has been installed with rustup, and the first argument to \fBcargo\fR
 begins with \fB+\fR, it will be interpreted as a rustup toolchain name (such
 as \fB+stable\fR or \fB+nightly\fR).
-See the \fIrustup documentation\fR <https://github.com/rust\-lang/rustup/>
+See the \fIrustup documentation\fR <https://rust\-lang.github.io/rustup/overrides.html>
 for more information about how toolchain overrides work.
 .RE
 .sp

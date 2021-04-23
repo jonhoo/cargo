@@ -9,8 +9,8 @@ cargo\-update \- Update dependencies as recorded in the local lock file
 \fBcargo update\fR [\fIoptions\fR]
 .SH "DESCRIPTION"
 This command will update dependencies in the \fBCargo.lock\fR file to the latest
-version. It requires that the \fBCargo.lock\fR file already exists as generated
-by commands such as \fBcargo\-build\fR(1) or \fBcargo\-generate\-lockfile\fR(1).
+version. If the \fBCargo.lock\fR file does not exist, it will be created with the
+latest available versions.
 .SH "OPTIONS"
 .SS "Update Options"
 .sp
@@ -40,6 +40,15 @@ Cannot be used with \fB\-\-precise\fR\&.
 When used with \fB\-p\fR, allows you to specify a specific version number to set
 the package to. If the package comes from a git repository, this can be a git
 revision (such as a SHA hash or tag).
+.RE
+.sp
+\fB\-w\fR, 
+\fB\-\-workspace\fR
+.RS 4
+Attempt to update only packages defined in the workspace. Other packages
+are updated only if they don't already exist in the lockfile. This
+option is useful for updating \fBCargo.lock\fR after you've changed version
+numbers in \fBCargo.toml\fR\&.
 .RE
 .sp
 \fB\-\-dry\-run\fR
@@ -126,7 +135,7 @@ May also be specified with the \fBnet.offline\fR \fIconfig value\fR <https://doc
 If Cargo has been installed with rustup, and the first argument to \fBcargo\fR
 begins with \fB+\fR, it will be interpreted as a rustup toolchain name (such
 as \fB+stable\fR or \fB+nightly\fR).
-See the \fIrustup documentation\fR <https://github.com/rust\-lang/rustup/>
+See the \fIrustup documentation\fR <https://rust\-lang.github.io/rustup/overrides.html>
 for more information about how toolchain overrides work.
 .RE
 .sp

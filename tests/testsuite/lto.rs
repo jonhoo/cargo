@@ -390,17 +390,17 @@ fn project_with_dep(crate_types: &str) -> Project {
             "bar/Cargo.toml",
             &format!(
                 r#"
-                [package]
-                name = "bar"
-                version = "0.0.0"
+                    [package]
+                    name = "bar"
+                    version = "0.0.0"
 
-                [dependencies]
-                registry = "*"
-                registry-shared = "*"
+                    [dependencies]
+                    registry = "*"
+                    registry-shared = "*"
 
-                [lib]
-                crate-type = [{}]
-            "#,
+                    [lib]
+                    crate-type = [{}]
+                "#,
                 crate_types
             ),
         )
@@ -526,7 +526,7 @@ fn cdylib_and_rlib() {
 [RUNNING] [..]target/release/deps/bar-[..]
 [RUNNING] [..]target/release/deps/b-[..]
 [DOCTEST] bar
-[RUNNING] `rustdoc --crate-type cdylib --crate-type rlib --test [..]-C embed-bitcode=no[..]
+[RUNNING] `rustdoc --crate-type cdylib --crate-type rlib --crate-name bar --test [..]-C embed-bitcode=no[..]
 ",
         )
         .run();
@@ -744,5 +744,112 @@ fn doctest() {
         .with_stderr_contains("[..]`rustc --crate-name bar[..]-C linker-plugin-lto[..]")
         .with_stderr_contains("[..]`rustc --crate-name foo[..]-C linker-plugin-lto[..]")
         .with_stderr_contains("[..]`rustdoc [..]-C lto[..]")
+        .run();
+}
+
+#[cargo_test]
+fn dylib_rlib_bin() {
+    // dylib+rlib linked with a binary
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [lib]
+                crate-type = ["dylib", "rlib"]
+
+                [profile.release]
+                lto = true
+            "#,
+        )
+        .file("src/lib.rs", "pub fn foo() { println!(\"hi!\"); }")
+        .file("src/main.rs", "fn main() { foo::foo(); }")
+        .build();
+
+    let output = p.cargo("build --release -v").exec_with_output().unwrap();
+    verify_lto(
+        &output,
+        "foo",
+        "--crate-type dylib --crate-type rlib",
+        Lto::ObjectAndBitcode,
+    );
+    verify_lto(&output, "foo", "--crate-type bin", Lto::Run(None));
+}
+
+#[cargo_test]
+fn fresh_swapping_commands() {
+    // In some rare cases, different commands end up building dependencies
+    // with different LTO settings. This checks that it doesn't cause the
+    // cache to thrash in that scenario.
+    Package::new("bar", "1.0.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bar = "1.0"
+
+                [profile.release]
+                lto = true
+            "#,
+        )
+        .file("src/lib.rs", "pub fn foo() { println!(\"hi!\"); }")
+        .build();
+
+    p.cargo("build --release -v")
+        .with_stderr(
+            "\
+[UPDATING] [..]
+[DOWNLOADING] crates ...
+[DOWNLOADED] bar v1.0.0 [..]
+[COMPILING] bar v1.0.0
+[RUNNING] `rustc --crate-name bar [..]-C linker-plugin-lto[..]
+[COMPILING] foo v0.1.0 [..]
+[RUNNING] `rustc --crate-name foo src/lib.rs [..]-C linker-plugin-lto[..]
+[FINISHED] [..]
+",
+        )
+        .run();
+    p.cargo("test --release -v")
+        .with_stderr_unordered(
+            "\
+[COMPILING] bar v1.0.0
+[RUNNING] `rustc --crate-name bar [..]-C embed-bitcode=no[..]
+[COMPILING] foo v0.1.0 [..]
+[RUNNING] `rustc --crate-name foo src/lib.rs [..]--crate-type lib[..]-C embed-bitcode=no[..]
+[RUNNING] `rustc --crate-name foo src/lib.rs [..]-C embed-bitcode=no[..]--test[..]
+[FINISHED] [..]
+[RUNNING] `[..]/foo[..]`
+[DOCTEST] foo
+[RUNNING] `rustdoc [..]-C embed-bitcode=no[..]
+",
+        )
+        .run();
+
+    p.cargo("build --release -v")
+        .with_stderr(
+            "\
+[FRESH] bar v1.0.0
+[FRESH] foo [..]
+[FINISHED] [..]
+",
+        )
+        .run();
+    p.cargo("test --release -v --no-run -v")
+        .with_stderr(
+            "\
+[FRESH] bar v1.0.0
+[FRESH] foo [..]
+[FINISHED] [..]
+",
+        )
         .run();
 }

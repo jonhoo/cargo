@@ -25,6 +25,8 @@ pub enum EitherManifest {
 }
 
 /// Contains all the information about a package, as loaded from a `Cargo.toml`.
+///
+/// This is deserialized using the [`TomlManifest`] type.
 #[derive(Clone, Debug)]
 pub struct Manifest {
     summary: Summary,
@@ -42,7 +44,7 @@ pub struct Manifest {
     patch: HashMap<Url, Vec<Dependency>>,
     workspace: WorkspaceConfig,
     original: Rc<TomlManifest>,
-    features: Features,
+    unstable_features: Features,
     edition: Edition,
     im_a_teapot: Option<bool>,
     default_run: Option<String>,
@@ -259,6 +261,9 @@ struct SerializedTarget<'a> {
     edition: &'a str,
     #[serde(rename = "required-features", skip_serializing_if = "Option::is_none")]
     required_features: Option<Vec<&'a str>>,
+    /// Whether docs should be built for the target via `cargo doc`
+    /// See https://doc.rust-lang.org/cargo/commands/cargo-doc.html#target-selection
+    doc: bool,
     doctest: bool,
     /// Whether tests should be run for the target (`test` field in `Cargo.toml`)
     test: bool,
@@ -281,6 +286,7 @@ impl ser::Serialize for Target {
             required_features: self
                 .required_features()
                 .map(|rf| rf.iter().map(|s| &**s).collect()),
+            doc: self.documented(),
             doctest: self.doctested() && self.doctestable(),
             test: self.tested(),
         }
@@ -371,7 +377,7 @@ impl Manifest {
         replace: Vec<(PackageIdSpec, Dependency)>,
         patch: HashMap<Url, Vec<Dependency>>,
         workspace: WorkspaceConfig,
-        features: Features,
+        unstable_features: Features,
         edition: Edition,
         im_a_teapot: Option<bool>,
         default_run: Option<String>,
@@ -393,7 +399,7 @@ impl Manifest {
             replace,
             patch,
             workspace,
-            features,
+            unstable_features,
             edition,
             original,
             im_a_teapot,
@@ -467,8 +473,9 @@ impl Manifest {
         &self.workspace
     }
 
-    pub fn features(&self) -> &Features {
-        &self.features
+    /// Unstable, nightly features that are enabled in this manifest.
+    pub fn unstable_features(&self) -> &Features {
+        &self.unstable_features
     }
 
     /// The style of resolver behavior to use, declared with the `resolver` field.
@@ -487,7 +494,7 @@ impl Manifest {
 
     pub fn feature_gate(&self) -> CargoResult<()> {
         if self.im_a_teapot.is_some() {
-            self.features
+            self.unstable_features
                 .require(Feature::test_dummy_unstable())
                 .chain_err(|| {
                     anyhow::format_err!(
@@ -578,7 +585,7 @@ impl VirtualManifest {
         &self.warnings
     }
 
-    pub fn features(&self) -> &Features {
+    pub fn unstable_features(&self) -> &Features {
         &self.features
     }
 

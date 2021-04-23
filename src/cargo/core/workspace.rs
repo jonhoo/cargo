@@ -315,21 +315,20 @@ impl<'cfg> Workspace<'cfg> {
     /// That is, this returns the path of the directory containing the
     /// `Cargo.toml` which is the root of this workspace.
     pub fn root(&self) -> &Path {
-        match self.root_manifest {
-            Some(ref p) => p,
-            None => &self.current_manifest,
-        }
-        .parent()
-        .unwrap()
+        self.root_manifest().parent().unwrap()
+    }
+
+    /// Returns the path of the `Cargo.toml` which is the root of this
+    /// workspace.
+    pub fn root_manifest(&self) -> &Path {
+        self.root_manifest
+            .as_ref()
+            .unwrap_or(&self.current_manifest)
     }
 
     /// Returns the root Package or VirtualManifest.
     fn root_maybe(&self) -> &MaybePackage {
-        let root = self
-            .root_manifest
-            .as_ref()
-            .unwrap_or(&self.current_manifest);
-        self.packages.get(root)
+        self.packages.get(self.root_manifest())
     }
 
     pub fn target_dir(&self) -> Filesystem {
@@ -446,7 +445,7 @@ impl<'cfg> Workspace<'cfg> {
                 .join("Cargo.toml");
             debug!("find_root - pointer {}", path.display());
             Ok(paths::normalize_path(&path))
-        };
+        }
 
         {
             let current = self.packages.load(manifest_path)?;
@@ -626,10 +625,11 @@ impl<'cfg> Workspace<'cfg> {
         Ok(())
     }
 
-    pub fn features(&self) -> &Features {
+    /// Returns the unstable nightly-only features enabled via `cargo-features` in the manifest.
+    pub fn unstable_features(&self) -> &Features {
         match self.root_maybe() {
-            MaybePackage::Package(p) => p.manifest().features(),
-            MaybePackage::Virtual(vm) => vm.features(),
+            MaybePackage::Package(p) => p.manifest().unstable_features(),
+            MaybePackage::Virtual(vm) => vm.unstable_features(),
         }
     }
 

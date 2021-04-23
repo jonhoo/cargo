@@ -240,7 +240,7 @@ pub struct RegistryPackage<'a> {
     yanked: Option<bool>,
     /// Native library name this package links to.
     ///
-    /// Added early 2018 (see https://github.com/rust-lang/cargo/pull/4978),
+    /// Added early 2018 (see <https://github.com/rust-lang/cargo/pull/4978>),
     /// can be `None` if published before then.
     links: Option<InternedString>,
 }
@@ -369,11 +369,77 @@ impl<'a> RegistryDependency<'a> {
     }
 }
 
+/// An indicator that the prefetching for a given package has completed.
+///
+/// To retrieve the index data for the package, use `Summaries::parse`.
+pub struct Fetched {
+    name: InternedString,
+    path: PathBuf,
+    // NOTE: we can get rid of the HashSet (and other complexity) if we had VersionReq::union
+    reqs: HashSet<semver::VersionReq>,
+    is_transitive: bool,
+}
+
+impl Fetched {
+    pub fn name(&self) -> InternedString {
+        self.name
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn version_reqs(&self) -> impl Iterator<Item = &semver::VersionReq> {
+        self.reqs.iter()
+    }
+}
+
 pub trait RegistryData {
     fn prepare(&self) -> CargoResult<()>;
     fn index_path(&self) -> &Filesystem;
+
+    /// Initiate a prefetch phase.
+    ///
+    /// During prefetch, a greedy dependency solver will talk the transitive dependency closure of
+    /// the package being built and call `prefetch` on each dependency. This allows an
+    /// implementation to pipeline the download of information for those dependencies, rather than
+    /// relying on synchronous calls to `load` later on.
+    ///
+    /// If this method returns `false` (the default), no prefetching happens.
+    fn start_prefetch(&mut self) -> CargoResult<bool> {
+        Ok(false)
+    }
+
+    /// Enqueue a prefetch of the given package.
+    ///
+    /// The package path, name, and dependency versions requirements are passed back from
+    /// `next_prefetched` so that they can be used to inform future calls to `prefetch`.
+    ///
+    /// If `req` is `None`, the index file will be downloaded, but will not be yielded by
+    /// `next_prefetched`. This is useful if you already have transitive closure of index entries
+    /// you wish to fetch.
+    fn prefetch(
+        &mut self,
+        _root: &Path,
+        _path: &Path,
+        _name: InternedString,
+        _req: Option<&semver::VersionReq>,
+        _is_transitive: bool,
+    ) -> CargoResult<()> {
+        Ok(())
+    }
+
+    /// Dequeue the next available prefetched index file.
+    fn next_prefetched(&mut self) -> CargoResult<Option<Fetched>> {
+        Ok(None)
+    }
+
+    fn update_index_file(&mut self, _root: &Path, _path: &Path) -> CargoResult<bool> {
+        Ok(false)
+    }
+
     fn load(
-        &self,
+        &mut self,
         root: &Path,
         path: &Path,
         data: &mut dyn FnMut(&[u8]) -> CargoResult<()>,
@@ -396,6 +462,8 @@ pub enum MaybeLock {
     Download { url: String, descriptor: String },
 }
 
+mod download;
+mod http_remote;
 mod index;
 mod local;
 mod remote;
@@ -411,10 +479,24 @@ impl<'cfg> RegistrySource<'cfg> {
         source_id: SourceId,
         yanked_whitelist: &HashSet<PackageId>,
         config: &'cfg Config,
-    ) -> RegistrySource<'cfg> {
+    ) -> CargoResult<RegistrySource<'cfg>> {
         let name = short_name(source_id);
-        let ops = remote::RemoteRegistry::new(source_id, config, &name);
-        RegistrySource::new(source_id, config, &name, Box::new(ops), yanked_whitelist)
+        let ops = if source_id.url().scheme().starts_with("sparse+") {
+            if !config.cli_unstable().http_registry {
+                anyhow::bail!("Usage of HTTP-based registries requires `-Z http-registry`");
+            }
+
+            Box::new(http_remote::HttpRegistry::new(source_id, config, &name)) as Box<_>
+        } else {
+            Box::new(remote::RemoteRegistry::new(source_id, config, &name)) as Box<_>
+        };
+        Ok(RegistrySource::new(
+            source_id,
+            config,
+            &name,
+            ops,
+            yanked_whitelist,
+        ))
     }
 
     pub fn local(
@@ -471,13 +553,6 @@ impl<'cfg> RegistrySource<'cfg> {
                 return Ok(unpack_dir.to_path_buf());
             }
         }
-        let mut ok = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .chain_err(|| format!("failed to open `{}`", path.display()))?;
-
         let gz = GzDecoder::new(tarball);
         let mut tar = Archive::new(gz);
         let prefix = unpack_dir.file_name().unwrap();
@@ -517,6 +592,15 @@ impl<'cfg> RegistrySource<'cfg> {
             result.chain_err(|| format!("failed to unpack entry at `{}`", entry_path.display()))?;
         }
 
+        // The lock file is created after unpacking so we overwrite a lock file
+        // which may have been extracted from the package.
+        let mut ok = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .chain_err(|| format!("failed to open `{}`", path.display()))?;
+
         // Write to the lock file to indicate that unpacking was successful.
         write!(ok, "ok")?;
 
@@ -524,6 +608,11 @@ impl<'cfg> RegistrySource<'cfg> {
     }
 
     fn do_update(&mut self) -> CargoResult<()> {
+        // NOTE: It is really bad if this method is called after prefetching has completed.
+        // It will cause every subsequent `load` to double-check with the server again
+        // _synchronously_. If this is ever called, we should arguably re-run prefetching, or the
+        // following build will be quite slow. Consider using update_index_file instead.
+
         self.ops.update_index()?;
         let path = self.ops.index_path();
         self.index = index::RegistryIndex::new(self.source_id, path, self.config);
@@ -562,6 +651,21 @@ impl<'cfg> RegistrySource<'cfg> {
 }
 
 impl<'cfg> Source for RegistrySource<'cfg> {
+    fn prefetch(
+        &mut self,
+        deps: &mut dyn ExactSizeIterator<Item = Cow<'_, Dependency>>,
+    ) -> CargoResult<()> {
+        // In query, if a dependency is locked, we see if we can get away with querying it without
+        // doing an index update. Only if that fails do we update the index and then try again.
+        // Since we're in the prefetching stage here, we never want to update the index regardless
+        // of whether any given dependency is locked or not. Instead, we just prefetch all the
+        // current dependencies regardless of whether they're locked or not. If an index update is
+        // needed later, we'll deal with it at that time.
+        self.index
+            .prefetch(deps, &self.yanked_whitelist, &mut *self.ops)?;
+        Ok(())
+    }
+
     fn query(&mut self, dep: &Dependency, f: &mut dyn FnMut(Summary)) -> CargoResult<()> {
         // If this is a precise dependency, then it came from a lock file and in
         // theory the registry is known to contain this version. If, however, we
@@ -580,8 +684,25 @@ impl<'cfg> Source for RegistrySource<'cfg> {
             if called {
                 return Ok(());
             } else {
-                debug!("falling back to an update");
-                self.do_update()?;
+                // We failed to query the dependency based on the currently available index files.
+                // This probably means that our index file for `dep` is outdated, and does not
+                // contain the requested version.
+                //
+                // If the registry we are using supports per-file index updates, we tell it to
+                // update just the given index file and then try the query again. Otherwise, we
+                // fall back to a full index update.
+                if self
+                    .index
+                    .update_index_file(dep.package_name(), &mut *self.ops)?
+                {
+                    debug!(
+                        "selectively refreshed index file for {}",
+                        dep.package_name()
+                    );
+                } else {
+                    debug!("falling back to an update");
+                    self.do_update()?;
+                }
             }
         }
 
@@ -656,8 +777,63 @@ impl<'cfg> Source for RegistrySource<'cfg> {
 
     fn is_yanked(&mut self, pkg: PackageId) -> CargoResult<bool> {
         if !self.updated {
-            self.do_update()?;
+            // Try selectively updating just the index file for this package if possible.
+            if !self.index.update_index_file(pkg.name(), &mut *self.ops)? {
+                // It's not, so update the whole index.
+                self.do_update()?;
+            }
         }
         self.index.is_yanked(pkg, &mut *self.ops)
+    }
+}
+
+fn make_dep_index_path(name: &str) -> PathBuf {
+    let fs_name = name
+        .chars()
+        .flat_map(|c| c.to_lowercase())
+        .collect::<String>();
+    let raw_path = match fs_name.len() {
+        1 => format!("1/{}", fs_name),
+        2 => format!("2/{}", fs_name),
+        3 => format!("3/{}/{}", &fs_name[..1], fs_name),
+        _ => format!("{}/{}/{}", &fs_name[0..2], &fs_name[2..4], fs_name),
+    };
+    PathBuf::from(raw_path)
+}
+
+fn make_dep_prefix(name: &str) -> String {
+    match name.len() {
+        1 => String::from("1"),
+        2 => String::from("2"),
+        3 => format!("3/{}", &name[..1]),
+        _ => format!("{}/{}", &name[0..2], &name[2..4]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{make_dep_index_path, make_dep_prefix};
+
+    #[test]
+    fn dep_path() {
+        use std::path::Path;
+        assert_eq!(make_dep_index_path("a"), Path::new("1/a"));
+        assert_eq!(make_dep_index_path("A"), Path::new("1/a"));
+        assert_eq!(make_dep_index_path("ab"), Path::new("2/ab"));
+        assert_eq!(make_dep_index_path("Ab"), Path::new("2/ab"));
+        assert_eq!(make_dep_index_path("abc"), Path::new("3/a/abc"));
+        assert_eq!(make_dep_index_path("Abc"), Path::new("3/a/abc"));
+        assert_eq!(make_dep_index_path("AbCd"), Path::new("ab/cd/abcd"));
+        assert_eq!(make_dep_index_path("aBcDe"), Path::new("ab/cd/abcde"));
+    }
+
+    #[test]
+    fn dep_prefix() {
+        assert_eq!(make_dep_prefix("a"), "1");
+        assert_eq!(make_dep_prefix("ab"), "2");
+        assert_eq!(make_dep_prefix("abc"), "3/a");
+        assert_eq!(make_dep_prefix("Abc"), "3/A");
+        assert_eq!(make_dep_prefix("AbCd"), "Ab/Cd");
+        assert_eq!(make_dep_prefix("aBcDe"), "aB/cD");
     }
 }

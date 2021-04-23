@@ -55,9 +55,36 @@ use crate::util::errors::{self, CargoResult, CargoResultExt, ProcessError, Verbo
 use crate::util::interning::InternedString;
 use crate::util::machine_message::Message;
 use crate::util::{self, machine_message, ProcessBuilder};
-use crate::util::{internal, join_paths, paths, profile};
+use crate::util::{add_path_args, internal, join_paths, paths, profile};
 
 const RUSTDOC_CRATE_VERSION_FLAG: &str = "--crate-version";
+
+#[derive(Copy, Clone, Hash, Debug, PartialEq, Eq)]
+pub enum LinkType {
+    Cdylib,
+    Bin,
+    Test,
+    Bench,
+    Example,
+}
+
+impl From<&super::Target> for Option<LinkType> {
+    fn from(value: &super::Target) -> Self {
+        if value.is_cdylib() {
+            Some(LinkType::Cdylib)
+        } else if value.is_bin() {
+            Some(LinkType::Bin)
+        } else if value.is_test() {
+            Some(LinkType::Test)
+        } else if value.is_bench() {
+            Some(LinkType::Bench)
+        } else if value.is_exe_example() {
+            Some(LinkType::Example)
+        } else {
+            None
+        }
+    }
+}
 
 /// A glorified callback for executing calls to rustc. Rather than calling rustc
 /// directly, we'll use an `Executor`, giving clients an opportunity to intercept
@@ -130,9 +157,9 @@ fn compile<'cfg>(
         custom_build::prepare(cx, unit)?
     } else if unit.mode.is_doc_test() {
         // We run these targets later, so this is just a no-op for now.
-        Job::new(Work::noop(), Freshness::Fresh)
+        Job::new_fresh()
     } else if build_plan {
-        Job::new(rustc(cx, unit, &exec.clone())?, Freshness::Dirty)
+        Job::new_dirty(rustc(cx, unit, &exec.clone())?)
     } else {
         let force = exec.force_rebuild(unit) || force_rebuild;
         let mut job = fingerprint::prepare_target(cx, unit, force)?;
@@ -196,7 +223,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
     // If we are a binary and the package also contains a library, then we
     // don't pass the `-l` flags.
     let pass_l_flag = unit.target.is_lib() || !unit.pkg.targets().iter().any(|t| t.is_lib());
-    let pass_cdylib_link_args = unit.target.is_cdylib();
+    let link_type = (&unit.target).into();
 
     let dep_info_name = match cx.files().metadata(unit) {
         Some(metadata) => format!("{}-{}.d", unit.target.crate_name(), metadata),
@@ -217,7 +244,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
     exec.init(cx, unit);
     let exec = exec.clone();
 
-    let root_output = cx.files().host_root().to_path_buf();
+    let root_output = cx.files().host_dest().to_path_buf();
     let target_dir = cx.bcx.ws.target_dir().into_path_unlocked();
     let pkg_root = unit.pkg.root().to_path_buf();
     let cwd = rustc
@@ -244,7 +271,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
                     &script_outputs,
                     &build_scripts,
                     pass_l_flag,
-                    pass_cdylib_link_args,
+                    link_type,
                     current_id,
                 )?;
                 add_plugin_deps(&mut rustc, &script_outputs, &build_scripts, &root_output)?;
@@ -291,7 +318,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
                 &mut |line| on_stderr_line(state, line, package_id, &target, &mut output_options),
             )
             .map_err(verbose_if_simple_exit_code)
-            .chain_err(|| format!("could not compile `{}`.", name))?;
+            .chain_err(|| format!("could not compile `{}`", name))?;
         }
 
         if rustc_dep_info_loc.exists() {
@@ -326,7 +353,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
         build_script_outputs: &BuildScriptOutputs,
         build_scripts: &BuildScripts,
         pass_l_flag: bool,
-        pass_cdylib_link_args: bool,
+        link_type: Option<LinkType>,
         current_id: PackageId,
     ) -> CargoResult<()> {
         for key in build_scripts.to_link.iter() {
@@ -339,6 +366,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
             for path in output.library_paths.iter() {
                 rustc.arg("-L").arg(path);
             }
+
             if key.0 == current_id {
                 for cfg in &output.cfgs {
                     rustc.arg("--cfg").arg(cfg);
@@ -348,10 +376,12 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
                         rustc.arg("-l").arg(name);
                     }
                 }
-                if pass_cdylib_link_args {
-                    for arg in output.linker_args.iter() {
-                        let link_arg = format!("link-arg={}", arg);
-                        rustc.arg("-C").arg(link_arg);
+            }
+
+            if link_type.is_some() {
+                for (lt, arg) in &output.linker_args {
+                    if lt.is_none() || *lt == link_type {
+                        rustc.arg("-C").arg(format!("link-arg={}", arg));
                     }
                 }
             }
@@ -448,7 +478,7 @@ fn link_targets(cx: &mut Context<'_, '_>, unit: &Unit, fresh: bool) -> CargoResu
                 fresh,
             }
             .to_json_string();
-            state.stdout(msg);
+            state.stdout(msg)?;
         }
         Ok(())
     }))
@@ -530,6 +560,11 @@ fn prepare_rustc(
     let mut base = cx
         .compilation
         .rustc_process(unit, is_primary, is_workspace)?;
+
+    if is_primary {
+        base.env("CARGO_PRIMARY_PACKAGE", "1");
+    }
+
     if cx.bcx.config.cli_unstable().jobserver_per_rustc {
         let client = cx.new_jobserver()?;
         base.inherit_jobserver(&client);
@@ -548,7 +583,7 @@ fn rustdoc(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Work> {
     let mut rustdoc = cx.compilation.rustdoc_process(unit)?;
     rustdoc.inherit_jobserver(&cx.jobserver);
     rustdoc.arg("--crate-name").arg(&unit.target.crate_name());
-    add_path_args(bcx, unit, &mut rustdoc);
+    add_path_args(bcx.ws, unit, &mut rustdoc);
     add_cap_lints(bcx, unit, &mut rustdoc);
 
     if let CompileKind::Target(target) = unit.kind {
@@ -614,7 +649,7 @@ fn rustdoc(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Work> {
                 &mut |line| on_stderr_line(state, line, package_id, &target, &mut output_options),
                 false,
             )
-            .chain_err(|| format!("Could not document `{}`.", name))?;
+            .chain_err(|| format!("could not document `{}`", name))?;
         Ok(())
     }))
 }
@@ -632,41 +667,6 @@ fn append_crate_version_flag(unit: &Unit, rustdoc: &mut ProcessBuilder) {
     rustdoc
         .arg(RUSTDOC_CRATE_VERSION_FLAG)
         .arg(unit.pkg.version().to_string());
-}
-
-// The path that we pass to rustc is actually fairly important because it will
-// show up in error messages (important for readability), debug information
-// (important for caching), etc. As a result we need to be pretty careful how we
-// actually invoke rustc.
-//
-// In general users don't expect `cargo build` to cause rebuilds if you change
-// directories. That could be if you just change directories in the package or
-// if you literally move the whole package wholesale to a new directory. As a
-// result we mostly don't factor in `cwd` to this calculation. Instead we try to
-// track the workspace as much as possible and we update the current directory
-// of rustc/rustdoc where appropriate.
-//
-// The first returned value here is the argument to pass to rustc, and the
-// second is the cwd that rustc should operate in.
-fn path_args(bcx: &BuildContext<'_, '_>, unit: &Unit) -> (PathBuf, PathBuf) {
-    let ws_root = bcx.ws.root();
-    let src = match unit.target.src_path() {
-        TargetSourcePath::Path(path) => path.to_path_buf(),
-        TargetSourcePath::Metabuild => unit.pkg.manifest().metabuild_path(bcx.ws.target_dir()),
-    };
-    assert!(src.is_absolute());
-    if unit.pkg.package_id().source_id().is_path() {
-        if let Ok(path) = src.strip_prefix(ws_root) {
-            return (path.to_path_buf(), ws_root.to_path_buf());
-        }
-    }
-    (src, unit.pkg.root().to_path_buf())
-}
-
-fn add_path_args(bcx: &BuildContext<'_, '_>, unit: &Unit, cmd: &mut ProcessBuilder) {
-    let (arg, cwd) = path_args(bcx, unit);
-    cmd.arg(arg);
-    cmd.cwd(cwd);
 }
 
 fn add_cap_lints(bcx: &BuildContext<'_, '_>, unit: &Unit, cmd: &mut ProcessBuilder) {
@@ -763,7 +763,7 @@ fn build_base_args(
         cmd.arg(format!("--edition={}", edition));
     }
 
-    add_path_args(bcx, unit, cmd);
+    add_path_args(bcx.ws, unit, cmd);
     add_error_format_and_color(cx, cmd, cx.rmeta_required(unit))?;
 
     if !test {
@@ -1029,7 +1029,7 @@ pub fn extern_args(
             if unit
                 .pkg
                 .manifest()
-                .features()
+                .unstable_features()
                 .require(Feature::public_dependency())
                 .is_ok()
                 && !dep.public
@@ -1134,7 +1134,7 @@ fn on_stdout_line(
     _package_id: PackageId,
     _target: &Target,
 ) -> CargoResult<()> {
-    state.stdout(line.to_string());
+    state.stdout(line.to_string())?;
     Ok(())
 }
 
@@ -1172,7 +1172,7 @@ fn on_stderr_line_inner(
     // something like that), so skip over everything that doesn't look like a
     // JSON message.
     if !line.starts_with('{') {
-        state.stderr(line.to_string());
+        state.stderr(line.to_string())?;
         return Ok(true);
     }
 
@@ -1184,7 +1184,7 @@ fn on_stderr_line_inner(
         // to stderr.
         Err(e) => {
             debug!("failed to parse json: {:?}", e);
-            state.stderr(line.to_string());
+            state.stderr(line.to_string())?;
             return Ok(true);
         }
     };
@@ -1220,7 +1220,7 @@ fn on_stderr_line_inner(
                         .map(|v| String::from_utf8(v).expect("utf8"))
                         .expect("strip should never fail")
                 };
-                state.stderr(rendered);
+                state.stderr(rendered)?;
                 return Ok(true);
             }
         }
@@ -1311,7 +1311,7 @@ fn on_stderr_line_inner(
     // Switch json lines from rustc/rustdoc that appear on stderr to stdout
     // instead. We want the stdout of Cargo to always be machine parseable as
     // stderr has our colorized human-readable messages.
-    state.stdout(msg);
+    state.stdout(msg)?;
     Ok(true)
 }
 

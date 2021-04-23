@@ -33,7 +33,8 @@ fn help_external_subcommand() {
                 if ::std::env::args().nth(2) == Some(String::from("--help")) {
                     println!("fancy help output");
                 }
-            }"#,
+            }
+            "#,
         )
         .publish();
     cargo_process("install cargo-fake-help").run();
@@ -47,7 +48,7 @@ fn z_flags_help() {
     // Test that the output of `cargo -Z help` shows a different help screen with
     // all the `-Z` flags.
     cargo_process("-Z help")
-        .with_stdout_contains("    -Z unstable-options -- Allow the usage of unstable options")
+        .with_stdout_contains("    -Z unstable-options    -- Allow the usage of unstable options")
         .run();
 }
 

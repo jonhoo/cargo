@@ -755,7 +755,7 @@ where
                 msg.push_str(attempt);
             }
         }
-        msg.push_str("\n");
+        msg.push('\n');
         if !ssh_agent_attempts.is_empty() {
             let names = ssh_agent_attempts
                 .iter()
@@ -953,7 +953,8 @@ pub fn fetch(
             };
             debug!("fetch failed: {}", err);
 
-            if !repo_reinitialized && err.class() == git2::ErrorClass::Reference {
+            if !repo_reinitialized && matches!(err.class(), ErrorClass::Reference | ErrorClass::Odb)
+            {
                 repo_reinitialized = true;
                 debug!(
                     "looks like this is a corrupt repository, reinitializing \
@@ -1153,11 +1154,7 @@ fn github_up_to_date(
 
     // Trim off the `.git` from the repository, if present, since that's
     // optional for GitHub and won't work when we try to use the API as well.
-    let repository = if repository.ends_with(".git") {
-        &repository[..repository.len() - 4]
-    } else {
-        repository
-    };
+    let repository = repository.strip_suffix(".git").unwrap_or(repository);
 
     let url = format!(
         "https://api.github.com/repos/{}/{}/commits/{}",

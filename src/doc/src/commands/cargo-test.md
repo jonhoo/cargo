@@ -78,8 +78,11 @@ virtual workspace will include all workspace members (equivalent to passing
 
 <dt class="option-term" id="option-cargo-test--p"><a class="option-anchor" href="#option-cargo-test--p"></a><code>-p</code> <em>spec</em>...</dt>
 <dt class="option-term" id="option-cargo-test---package"><a class="option-anchor" href="#option-cargo-test---package"></a><code>--package</code> <em>spec</em>...</dt>
-<dd class="option-desc">Test only the specified packages. See <a href="https://doc.rust-lang.org/cargo/commands/cargo-pkgid.md">cargo-pkgid(1)</a> for the
-SPEC format. This flag may be specified multiple times.</dd>
+<dd class="option-desc">Test only the specified packages. See <a href="cargo-pkgid.html">cargo-pkgid(1)</a> for the
+SPEC format. This flag may be specified multiple times and supports common Unix
+glob patterns like <code>*</code>, <code>?</code> and <code>[]</code>. However, to avoid your shell accidentally 
+expanding glob patterns before Cargo handles them, you must use single quotes or
+double quotes around each pattern.</dd>
 
 
 <dt class="option-term" id="option-cargo-test---workspace"><a class="option-anchor" href="#option-cargo-test---workspace"></a><code>--workspace</code></dt>
@@ -94,7 +97,10 @@ SPEC format. This flag may be specified multiple times.</dd>
 
 <dt class="option-term" id="option-cargo-test---exclude"><a class="option-anchor" href="#option-cargo-test---exclude"></a><code>--exclude</code> <em>SPEC</em>...</dt>
 <dd class="option-desc">Exclude the specified packages. Must be used in conjunction with the
-<code>--workspace</code> flag. This flag may be specified multiple times.</dd>
+<code>--workspace</code> flag. This flag may be specified multiple times and supports
+common Unix glob patterns like <code>*</code>, <code>?</code> and <code>[]</code>. However, to avoid your shell
+accidentally expanding glob patterns before Cargo handles them, you must use
+single quotes or double quotes around each pattern.</dd>
 
 
 </dl>
@@ -132,7 +138,12 @@ is set when the integration test is built so that it can use the
 executable.
 
 Passing target selection flags will test only the specified
-targets.
+targets. 
+
+Note that `--bin`, `--example`, `--test` and `--bench` flags also 
+support common Unix glob patterns like `*`, `?` and `[]`. However, to avoid your 
+shell accidentally expanding glob patterns before Cargo handles them, you must 
+use single quotes or double quotes around each glob pattern.
 
 <dl>
 
@@ -141,7 +152,8 @@ targets.
 
 
 <dt class="option-term" id="option-cargo-test---bin"><a class="option-anchor" href="#option-cargo-test---bin"></a><code>--bin</code> <em>name</em>...</dt>
-<dd class="option-desc">Test the specified binary. This flag may be specified multiple times.</dd>
+<dd class="option-desc">Test the specified binary. This flag may be specified multiple times
+and supports common Unix glob patterns.</dd>
 
 
 <dt class="option-term" id="option-cargo-test---bins"><a class="option-anchor" href="#option-cargo-test---bins"></a><code>--bins</code></dt>
@@ -150,7 +162,8 @@ targets.
 
 
 <dt class="option-term" id="option-cargo-test---example"><a class="option-anchor" href="#option-cargo-test---example"></a><code>--example</code> <em>name</em>...</dt>
-<dd class="option-desc">Test the specified example. This flag may be specified multiple times.</dd>
+<dd class="option-desc">Test the specified example. This flag may be specified multiple times
+and supports common Unix glob patterns.</dd>
 
 
 <dt class="option-term" id="option-cargo-test---examples"><a class="option-anchor" href="#option-cargo-test---examples"></a><code>--examples</code></dt>
@@ -159,7 +172,7 @@ targets.
 
 <dt class="option-term" id="option-cargo-test---test"><a class="option-anchor" href="#option-cargo-test---test"></a><code>--test</code> <em>name</em>...</dt>
 <dd class="option-desc">Test the specified integration test. This flag may be specified
-multiple times.</dd>
+multiple times and supports common Unix glob patterns.</dd>
 
 
 <dt class="option-term" id="option-cargo-test---tests"><a class="option-anchor" href="#option-cargo-test---tests"></a><code>--tests</code></dt>
@@ -173,7 +186,8 @@ manifest settings for the target.</dd>
 
 
 <dt class="option-term" id="option-cargo-test---bench"><a class="option-anchor" href="#option-cargo-test---bench"></a><code>--bench</code> <em>name</em>...</dt>
-<dd class="option-desc">Test the specified benchmark. This flag may be specified multiple times.</dd>
+<dd class="option-desc">Test the specified benchmark. This flag may be specified multiple
+times and supports common Unix glob patterns.</dd>
 
 
 <dt class="option-term" id="option-cargo-test---benches"><a class="option-anchor" href="#option-cargo-test---benches"></a><code>--benches</code></dt>
@@ -243,10 +257,10 @@ architecture. The general format of the triple is
 <code>&lt;arch&gt;&lt;sub&gt;-&lt;vendor&gt;-&lt;sys&gt;-&lt;abi&gt;</code>. Run <code>rustc --print target-list</code> for a
 list of supported targets.</p>
 <p>This may also be specified with the <code>build.target</code>
-<a href="https://doc.rust-lang.org/cargo/reference/config.html">config value</a>.</p>
+<a href="../reference/config.html">config value</a>.</p>
 <p>Note that specifying this flag makes Cargo run in a different mode where the
 target artifacts are placed in a separate directory. See the
-<a href="https://doc.rust-lang.org/cargo/guide/build-cache.html">build cache</a> documentation for more details.</dd>
+<a href="../guide/build-cache.html">build cache</a> documentation for more details.</dd>
 
 
 
@@ -265,7 +279,7 @@ selection.</dd>
 <dt class="option-term" id="option-cargo-test---target-dir"><a class="option-anchor" href="#option-cargo-test---target-dir"></a><code>--target-dir</code> <em>directory</em></dt>
 <dd class="option-desc">Directory for all generated artifacts and intermediate files. May also be
 specified with the <code>CARGO_TARGET_DIR</code> environment variable, or the
-<code>build.target-dir</code> <a href="https://doc.rust-lang.org/cargo/reference/config.html">config value</a>. Defaults
+<code>build.target-dir</code> <a href="../reference/config.html">config value</a>. Defaults
 to <code>target</code> in the root of the workspace.</dd>
 
 
@@ -286,7 +300,7 @@ results readable. Test output can be recovered (e.g., for debugging) by passing
 <dd class="option-desc">Use verbose output. May be specified twice for &quot;very verbose&quot; output which
 includes extra output such as dependency warnings and build script output.
 May also be specified with the <code>term.verbose</code>
-<a href="https://doc.rust-lang.org/cargo/reference/config.html">config value</a>.</dd>
+<a href="../reference/config.html">config value</a>.</dd>
 
 
 <dt class="option-term" id="option-cargo-test--q"><a class="option-anchor" href="#option-cargo-test--q"></a><code>-q</code></dt>
@@ -303,7 +317,7 @@ terminal.</li>
 <li><code>never</code>: Never display colors.</li>
 </ul>
 <p>May also be specified with the <code>term.color</code>
-<a href="https://doc.rust-lang.org/cargo/reference/config.html">config value</a>.</dd>
+<a href="../reference/config.html">config value</a>.</dd>
 
 
 
@@ -314,7 +328,7 @@ and consists of comma-separated values. Valid values:</p>
 <li><code>human</code> (default): Display in a human-readable text format.</li>
 <li><code>short</code>: Emit shorter, human-readable text messages.</li>
 <li><code>json</code>: Emit JSON messages to stdout. See
-<a href="https://doc.rust-lang.org/cargo/reference/external-tools.html#json-messages">the reference</a>
+<a href="../reference/external-tools.html#json-messages">the reference</a>
 for more details.</li>
 <li><code>json-diagnostic-short</code>: Ensure the <code>rendered</code> field of JSON messages contains
 the &quot;short&quot; rendering from rustc.</li>
@@ -360,9 +374,9 @@ proceed without the network if possible.</p>
 <p>Beware that this may result in different dependency resolution than online
 mode. Cargo will restrict itself to crates that are downloaded locally, even
 if there might be a newer version as indicated in the local copy of the index.
-See the <a href="https://doc.rust-lang.org/cargo/commands/cargo-fetch.md">cargo-fetch(1)</a> command to download dependencies before going
+See the <a href="cargo-fetch.html">cargo-fetch(1)</a> command to download dependencies before going
 offline.</p>
-<p>May also be specified with the <code>net.offline</code> <a href="https://doc.rust-lang.org/cargo/reference/config.html">config value</a>.</dd>
+<p>May also be specified with the <code>net.offline</code> <a href="../reference/config.html">config value</a>.</dd>
 
 
 
@@ -376,7 +390,7 @@ offline.</p>
 <dd class="option-desc">If Cargo has been installed with rustup, and the first argument to <code>cargo</code>
 begins with <code>+</code>, it will be interpreted as a rustup toolchain name (such
 as <code>+stable</code> or <code>+nightly</code>).
-See the <a href="https://github.com/rust-lang/rustup/">rustup documentation</a>
+See the <a href="https://rust-lang.github.io/rustup/overrides.html">rustup documentation</a>
 for more information about how toolchain overrides work.</dd>
 
 
@@ -405,7 +419,7 @@ includes an option to control the number of threads used:
 <dt class="option-term" id="option-cargo-test--j"><a class="option-anchor" href="#option-cargo-test--j"></a><code>-j</code> <em>N</em></dt>
 <dt class="option-term" id="option-cargo-test---jobs"><a class="option-anchor" href="#option-cargo-test---jobs"></a><code>--jobs</code> <em>N</em></dt>
 <dd class="option-desc">Number of parallel jobs to run. May also be specified with the
-<code>build.jobs</code> <a href="https://doc.rust-lang.org/cargo/reference/config.html">config value</a>. Defaults to
+<code>build.jobs</code> <a href="../reference/config.html">config value</a>. Defaults to
 the number of CPUs.</dd>
 
 
@@ -465,4 +479,4 @@ details on environment variables that Cargo reads.
        cargo test --test int_test_name -- modname::test_name
 
 ## SEE ALSO
-[cargo(1)](cargo.md), [cargo-bench(1)](cargo-bench.md)
+[cargo(1)](cargo.html), [cargo-bench(1)](cargo-bench.html)

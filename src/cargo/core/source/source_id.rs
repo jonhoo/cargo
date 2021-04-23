@@ -135,6 +135,11 @@ impl SourceId {
                 Ok(SourceId::new(SourceKind::Registry, url)?
                     .with_precise(Some("locked".to_string())))
             }
+            "sparse" => {
+                let url = string.into_url()?;
+                Ok(SourceId::new(SourceKind::Registry, url)?
+                    .with_precise(Some("locked".to_string())))
+            }
             "path" => {
                 let url = url.into_url()?;
                 SourceId::new(SourceKind::Path, url)
@@ -194,8 +199,9 @@ impl SourceId {
 
     pub fn alt_registry(config: &Config, key: &str) -> CargoResult<SourceId> {
         let url = config.get_registry_index(key)?;
+        let (kind, url) = (SourceKind::Registry, url);
         Ok(SourceId::wrap(SourceIdInner {
-            kind: SourceKind::Registry,
+            kind,
             canonical_url: CanonicalUrl::new(&url)?,
             url,
             precise: None,
@@ -278,7 +284,7 @@ impl SourceId {
                 self,
                 yanked_whitelist,
                 config,
-            ))),
+            )?)),
             SourceKind::LocalRegistry => {
                 let path = match self.inner.url.to_file_path() {
                     Ok(p) => p,

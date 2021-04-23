@@ -122,6 +122,8 @@ OUTPUT FORMAT
                                   This property is not included if no required features are set.
                                */
                                "required-features": ["feat1"],
+                               /* Whether the target should be documented by `cargo doc`. */
+                               "doc": true,
                                /* Whether or not this target has doc tests enabled, and
                                   the target is compatible with doc testing.
                                */
@@ -177,6 +179,10 @@ OUTPUT FORMAT
                        "readme": "README.md",
                        /* The repository value from the manifest or null if not specified. */
                        "repository": "https://github.com/rust-lang/cargo",
+                       /* The homepage value from the manifest or null if not specified. */
+                       "homepage": "https://rust-lang.org",
+                       /* The documentation value from the manifest or null if not specified. */
+                       "documentation": "https://doc.rust-lang.org/stable/std",
                        /* The default edition of the package.
                           Note that individual targets may have different editions.
                        */
@@ -375,8 +381,8 @@ OPTIONS
            If Cargo has been installed with rustup, and the first argument to
            cargo begins with +, it will be interpreted as a rustup toolchain
            name (such as +stable or +nightly). See the rustup documentation
-           <https://github.com/rust-lang/rustup/> for more information about
-           how toolchain overrides work.
+           <https://rust-lang.github.io/rustup/overrides.html> for more
+           information about how toolchain overrides work.
 
        -h, --help
            Prints help information.
