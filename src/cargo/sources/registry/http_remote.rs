@@ -61,6 +61,9 @@ pub struct HttpRegistry<'cfg> {
     /// Store the server URL without the protocol prefix (sparse+)
     url: Url,
 
+    /// Store optional authorization token
+    token: Option<String>,
+
     /// Cached HTTP handle for synchronous requests (RegistryData::load).
     http: RefCell<Option<Easy>>,
 
@@ -160,12 +163,20 @@ impl<'cfg> HttpRegistry<'cfg> {
             .into_url()
             .expect("a url with the protocol stripped should still be valid");
 
+        let token = match crate::sources::SourceConfigMap::new(&config) {
+            Err(_) => None,
+            Ok(sm) => {
+                sm.get_token(&source_id)
+            }
+        };
+
         HttpRegistry {
             index_path: config.registry_index_path().join(name),
             cache_path: config.registry_cache_path().join(name),
             source_id,
             config,
             url,
+            token,
             http: RefCell::new(None),
             prefetch: Multi::new(),
             multiplexing: false,
@@ -462,6 +473,9 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
             }
             handle.http_headers(list)?;
         }
+
+        // Add authorization token, if set.
+        let auth_token = self.config;
 
         // We're going to have a bunch of downloads all happening "at the same time".
         // So, we need some way to track what headers/data/responses are for which request.

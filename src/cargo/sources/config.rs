@@ -33,6 +33,8 @@ struct SourceConfigDef {
     directory: Option<ConfigRelativePath>,
     /// A registry source. Value is a URL.
     registry: OptValue<String>,
+    /// An optional authorization token
+    token: Option<String>,
     /// A local registry source.
     local_registry: Option<ConfigRelativePath>,
     /// A git source. Value is a URL.
@@ -51,6 +53,7 @@ struct SourceConfigDef {
 /// [source.crates-io]
 /// registry = 'https://github.com/rust-lang/crates.io-index'
 /// replace-with = 'foo'    # optional
+/// token = 'authorization_token' # optional
 /// ```
 #[derive(Clone)]
 struct SourceConfig {
@@ -64,6 +67,17 @@ struct SourceConfig {
     /// this configuration key was defined (such as the `.cargo/config` path
     /// or the environment variable name).
     replace_with: Option<(String, String)>,
+
+    /// Optional authorization token.
+    ///
+    /// Use to authorize any request to a private registry.
+    token: Option<String>,
+}
+
+impl SourceConfig {
+    pub fn get_token(&self) -> Option<String> {
+        self.token.clone()
+    }
 }
 
 impl<'cfg> SourceConfigMap<'cfg> {
@@ -89,9 +103,16 @@ impl<'cfg> SourceConfigMap<'cfg> {
             SourceConfig {
                 id: SourceId::crates_io(config)?,
                 replace_with: None,
+                token: None,
             },
         )?;
         Ok(base)
+    }
+
+    pub fn get_token(&self, source_id: &SourceId) -> Option<String> {
+        source_id.get_name()
+            .and_then(|n| self.cfgs.get(&n))
+            .and_then(|c| c.get_token())
     }
 
     pub fn config(&self) -> &'cfg Config {
@@ -269,11 +290,13 @@ restore the source replacement configuration to continue the build
             .replace_with
             .map(|val| (val.val, val.definition.to_string()));
 
+
         self.add(
             &name,
             SourceConfig {
                 id: src,
                 replace_with,
+                token: def.token,
             },
         )?;
 

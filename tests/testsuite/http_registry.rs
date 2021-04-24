@@ -43,6 +43,83 @@ fn setup() -> RegistryServer {
     server
 }
 
+fn setup_authorized() -> RegistryServer {
+    let server = serve_registry(registry_path());
+
+    let root = paths::root();
+    t!(fs::create_dir(&root.join(".cargo")));
+    t!(fs::write(
+        root.join(".cargo/config"),
+        format!(
+            "
+            [source.crates-io]
+            registry = 'https://wut'
+            replace-with = 'my-awesome-http-registry'
+
+            [source.my-awesome-http-registry]
+            registry = 'sparse+http://{}'
+            token = 'some_authorization_token'
+        ",
+            server.addr()
+        )
+    ));
+
+    server
+}
+
+
+#[cargo_test]
+fn simple_authorized() {
+    let server = setup_authorized();
+    let url = format!("sparse+http://{}", server.addr());
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = ">= 0.0.0"
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    Package::new("bar", "0.0.1").publish();
+
+    cargo(&p, "build")
+        .with_stderr(&format!(
+            "\
+[UPDATING] `{reg}` index
+[PREFETCHING] index files ...
+[DOWNLOADING] crates ...
+[DOWNLOADED] bar v0.0.1 (registry `{reg}`)
+[COMPILING] bar v0.0.1
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]s
+",
+            reg = url
+        ))
+        .run();
+
+    cargo(&p, "clean").run();
+
+    // Don't download a second time
+    cargo(&p, "build")
+        .with_stderr(
+            "\
+[PREFETCHING] index files ...
+[COMPILING] bar v0.0.1
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]s
+",
+        )
+        .run();
+}
+
 #[cargo_test]
 fn not_on_stable() {
     let _server = setup();

@@ -365,6 +365,10 @@ impl SourceId {
     pub fn full_hash<S: hash::Hasher>(self, into: &mut S) {
         ptr::NonNull::from(self.inner).hash(into)
     }
+
+    pub fn get_name(&self) -> Option<String> {
+        self.inner.name.clone()
+    }
 }
 
 impl PartialEq for SourceId {
