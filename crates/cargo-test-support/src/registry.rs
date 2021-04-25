@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::thread;
 use tar::{Builder, Header};
 use url::Url;
+use std::ops::Deref;
 
 /// Gets the path to the local index pretending to be crates.io. This is a Git repo
 /// initialized with a `config.json` file pointing to `dl_path` for downloads
@@ -22,44 +23,55 @@ use url::Url;
 pub fn registry_path() -> PathBuf {
     generate_path("registry")
 }
+
 pub fn registry_url() -> Url {
     generate_url("registry")
 }
+
 /// Gets the path for local web API uploads. Cargo will place the contents of a web API
 /// request here. For example, `api/v1/crates/new` is the result of publishing a crate.
 pub fn api_path() -> PathBuf {
     generate_path("api")
 }
+
 pub fn api_url() -> Url {
     generate_url("api")
 }
+
 /// Gets the path where crates can be downloaded using the web API endpoint. Crates
 /// should be organized as `{name}/{version}/download` to match the web API
 /// endpoint. This is rarely used and must be manually set up.
 pub fn dl_path() -> PathBuf {
     generate_path("dl")
 }
+
 pub fn dl_url() -> Url {
     generate_url("dl")
 }
+
 /// Gets the alternative-registry version of `registry_path`.
 pub fn alt_registry_path() -> PathBuf {
     generate_path("alternative-registry")
 }
+
 pub fn alt_registry_url() -> Url {
     generate_url("alternative-registry")
 }
+
 /// Gets the alternative-registry version of `dl_path`.
 pub fn alt_dl_path() -> PathBuf {
     generate_path("alt_dl")
 }
+
 pub fn alt_dl_url() -> String {
     generate_alt_dl_url("alt_dl")
 }
+
 /// Gets the alternative-registry version of `api_path`.
 pub fn alt_api_path() -> PathBuf {
     generate_path("alt_api")
 }
+
 pub fn alt_api_url() -> Url {
     generate_url("alt_api")
 }
@@ -67,9 +79,11 @@ pub fn alt_api_url() -> Url {
 pub fn generate_path(name: &str) -> PathBuf {
     paths::root().join(name)
 }
+
 pub fn generate_url(name: &str) -> Url {
     Url::from_file_path(generate_path(name)).ok().unwrap()
 }
+
 pub fn generate_alt_dl_url(name: &str) -> String {
     let base = Url::from_file_path(generate_path(name)).ok().unwrap();
     format!("{}/{{crate}}/{{version}}/{{crate}}-{{version}}.crate", base)
@@ -239,7 +253,7 @@ impl Drop for RegistryServer {
 }
 
 #[must_use]
-pub fn serve_registry(registry_path: PathBuf) -> RegistryServer {
+pub fn serve_registry(registry_path: PathBuf, auth_token: Option<String>) -> RegistryServer {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let done = Arc::new(AtomicBool::new(false));
@@ -274,6 +288,7 @@ pub fn serve_registry(registry_path: PathBuf) -> RegistryServer {
                 // Grab some other headers we may care about.
                 let mut if_modified_since = None;
                 let mut if_none_match = None;
+                let mut token = None;
                 loop {
                     line.clear();
                     if buf.read_line(&mut line).unwrap() == 0 {
@@ -297,8 +312,20 @@ pub fn serve_registry(registry_path: PathBuf) -> RegistryServer {
                         if_modified_since = Some(value.to_owned());
                     } else if line.starts_with("If-None-Match:") {
                         if_none_match = Some(value.trim_matches('"').to_owned());
+                    // It would make sense to check the auth. header before the "file.exists()", as
+                    // everything after can be skipped. For the tests, it should be enough to check it here.
+                    } else if line.starts_with("Authorization:") {
+                        token = Some(value.to_owned())
                     }
                 }
+
+                // Check if authorization is expected and
+                // an authorization token is provided.
+                let authorized = match (&auth_token, token) {
+                    (Some(expected), Some(actual)) => expected.deref() == actual,
+                    (Some(expected), None) => false,
+                    (_, _) => true
+                };
 
                 // Now grab info about the file.
                 let data = fs::read(&file).unwrap();
@@ -325,7 +352,12 @@ pub fn serve_registry(registry_path: PathBuf) -> RegistryServer {
                 }
 
                 // Write out the main response line.
-                if any_match && all_match {
+                if !authorized {
+                    buf.get_mut()
+                        .write_all(b"HTTP/1.1 401 Unauthorized\r\n\r\n")
+                        .unwrap();
+                }
+                else if any_match && all_match {
                     buf.get_mut()
                         .write_all(b"HTTP/1.1 304 Not Modified\r\n")
                         .unwrap();
@@ -335,19 +367,21 @@ pub fn serve_registry(registry_path: PathBuf) -> RegistryServer {
                 // TODO: Support 451 for crate index deletions.
 
                 // Write out other headers.
-                buf.get_mut()
-                    .write_all(format!("Content-Length: {}\r\n", data.len()).as_bytes())
-                    .unwrap();
-                buf.get_mut()
-                    .write_all(format!("ETag: \"{}\"\r\n", etag).as_bytes())
-                    .unwrap();
-                buf.get_mut()
-                    .write_all(format!("Last-Modified: {}\r\n", last_modified).as_bytes())
-                    .unwrap();
+                if authorized {
+                    buf.get_mut()
+                        .write_all(format!("Content-Length: {}\r\n", data.len()).as_bytes())
+                        .unwrap();
+                    buf.get_mut()
+                        .write_all(format!("ETag: \"{}\"\r\n", etag).as_bytes())
+                        .unwrap();
+                    buf.get_mut()
+                        .write_all(format!("Last-Modified: {}\r\n", last_modified).as_bytes())
+                        .unwrap();
 
-                // And finally, write out the body.
-                buf.get_mut().write_all(b"\r\n").unwrap();
-                buf.get_mut().write_all(&data).unwrap();
+                    // And finally, write out the body.
+                    buf.get_mut().write_all(b"\r\n").unwrap();
+                    buf.get_mut().write_all(&data).unwrap();
+                }
             } else {
                 loop {
                     line.clear();
@@ -593,7 +627,7 @@ impl Package {
             "yanked": self.yanked,
             "links": self.links,
         })
-        .to_string();
+            .to_string();
 
         let file = match self.name.len() {
             1 => format!("1/{}", self.name),

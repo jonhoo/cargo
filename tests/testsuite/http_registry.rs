@@ -21,7 +21,7 @@ fn cargo(p: &cargo_test_support::Project, s: &str) -> cargo_test_support::Execs 
 }
 
 fn setup() -> RegistryServer {
-    let server = serve_registry(registry_path());
+    let server = serve_registry(registry_path(), None);
 
     let root = paths::root();
     t!(fs::create_dir(&root.join(".cargo")));
@@ -43,8 +43,8 @@ fn setup() -> RegistryServer {
     server
 }
 
-fn setup_authorized() -> RegistryServer {
-    let server = serve_registry(registry_path());
+fn setup_authorized(expected_token: Option<String>, actual_token: Option<String>) -> RegistryServer {
+    let server = serve_registry(registry_path(), expected_token);
 
     let root = paths::root();
     t!(fs::create_dir(&root.join(".cargo")));
@@ -58,9 +58,13 @@ fn setup_authorized() -> RegistryServer {
 
             [source.my-awesome-http-registry]
             registry = 'sparse+http://{}'
-            token = 'some_authorization_token'
+            {}
         ",
-            server.addr()
+            server.addr(),
+            match actual_token {
+                    Some(t) => format!("token =  '{}'", t),
+                    None => String::new()
+                }
         )
     ));
 
@@ -70,7 +74,10 @@ fn setup_authorized() -> RegistryServer {
 
 #[cargo_test]
 fn simple_authorized() {
-    let server = setup_authorized();
+    let server = setup_authorized(
+        Some("auth_token".to_string()),
+        Some("auth_token".to_string()),
+    );
     let url = format!("sparse+http://{}", server.addr());
     let p = project()
         .file(
@@ -106,19 +113,88 @@ fn simple_authorized() {
         .run();
 
     cargo(&p, "clean").run();
-
-    // Don't download a second time
-    cargo(&p, "build")
-        .with_stderr(
-            "\
-[PREFETCHING] index files ...
-[COMPILING] bar v0.0.1
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]s
-",
-        )
-        .run();
 }
+
+
+#[cargo_test]
+fn simple_wrong_authorization_token() {
+    let server = setup_authorized(
+        Some("auth_token".to_string()),
+        Some("wrong_auth_token".to_string()),
+    );
+    let url = format!("sparse+http://{}", server.addr());
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = ">= 0.0.0"
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    Package::new("bar", "0.0.1").publish();
+
+    cargo(&p, "build")
+        .with_status(101)
+        .with_stderr_contains(&format!(
+            "\
+[UPDATING] `{reg}` index
+[PREFETCHING] index files ...
+error: authorization failed. Request needs to be authorized with a token.
+error: no matching package named `bar` found",
+            reg = url))
+        .run();
+
+    cargo(&p, "clean").run();
+}
+
+
+#[cargo_test]
+fn simple_authorization_token_missing() {
+    let server = setup_authorized(
+        Some("auth_token".to_string()),
+        None,
+    );
+    let url = format!("sparse+http://{}", server.addr());
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = ">= 0.0.0"
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    Package::new("bar", "0.0.1").publish();
+
+    cargo(&p, "build")
+        .with_status(101)
+        .with_stderr_contains(&format!(
+            "\
+[UPDATING] `{reg}` index
+[PREFETCHING] index files ...
+error: authorization failed. Request needs to be authorized with a token.
+error: no matching package named `bar` found",
+            reg = url))
+        .run();
+
+    cargo(&p, "clean").run();
+}
+
 
 #[cargo_test]
 fn not_on_stable() {

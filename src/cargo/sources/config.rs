@@ -74,12 +74,6 @@ struct SourceConfig {
     token: Option<String>,
 }
 
-impl SourceConfig {
-    pub fn get_token(&self) -> Option<String> {
-        self.token.clone()
-    }
-}
-
 impl<'cfg> SourceConfigMap<'cfg> {
     pub fn new(config: &'cfg Config) -> CargoResult<SourceConfigMap<'cfg>> {
         let mut base = SourceConfigMap::empty(config)?;
@@ -109,10 +103,9 @@ impl<'cfg> SourceConfigMap<'cfg> {
         Ok(base)
     }
 
-    pub fn get_token(&self, source_id: &SourceId) -> Option<String> {
-        source_id.get_name()
-            .and_then(|n| self.cfgs.get(&n))
-            .and_then(|c| c.get_token())
+    pub fn token(&self, source_id: &SourceId) -> Option<String> {
+        let name: &str = self.id2name[source_id].as_ref();
+        self.cfgs.get(name).and_then(|c| c.token.clone())
     }
 
     pub fn config(&self) -> &'cfg Config {

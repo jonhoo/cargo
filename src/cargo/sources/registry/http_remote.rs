@@ -163,12 +163,8 @@ impl<'cfg> HttpRegistry<'cfg> {
             .into_url()
             .expect("a url with the protocol stripped should still be valid");
 
-        let token = match crate::sources::SourceConfigMap::new(&config) {
-            Err(_) => None,
-            Ok(sm) => {
-                sm.get_token(&source_id)
-            }
-        };
+        // I bet there is better way to get to the token that I'm not aware of
+        let token=crate::sources::SourceConfigMap::new(&config).unwrap().token(&source_id);
 
         HttpRegistry {
             index_path: config.registry_index_path().join(name),
@@ -463,19 +459,21 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
         try_old_curl!(handle.pipewait(true), "pipewait");
 
         // Make sure we don't send data back if it's the same as we have in the index.
+        let mut list = List::new();
         if let Some((ref etag, ref last_modified, _)) = was {
-            let mut list = List::new();
             if !etag.is_empty() {
                 list.append(&format!("If-None-Match: {}", etag))?;
             }
             if !last_modified.is_empty() {
                 list.append(&format!("If-Modified-Since: {}", last_modified))?;
             }
-            handle.http_headers(list)?;
         }
 
-        // Add authorization token, if set.
-        let auth_token = self.config;
+        // If an authorization token is set, add it to the headers.
+        if let Some(ref auth_token) = self.token {
+            list.append(&format!("Authorization: {}", auth_token))?;
+        }
+        handle.http_headers(list)?;
 
         // We're going to have a bunch of downloads all happening "at the same time".
         // So, we need some way to track what headers/data/responses are for which request.
@@ -746,6 +744,21 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
                             paths::remove_file(pkg)?;
                         }
                     }
+                    401 => {
+                        // Not Authorized
+                        //
+                        // If the registry supports authorization and the authorization
+                        // fails for some reason, e.g. missing or wrong token.
+                        eprintln!("error: authorization failed. Request needs to be authorized with a token."); // Not sure what the correct why of displaying a meaningful error message is
+
+                        // Let cargo handle the "Not Authorized" case the same way, it handles a "Not Found", as in the end
+                        // the package is not available to use.
+                        let path = self.config.assert_package_cache_locked(&self.index_path);
+                        let pkg = path.join(&fetched.path);
+                        if pkg.exists() {
+                            paths::remove_file(pkg)?;
+                        }
+                    }
                     code => {
                         anyhow::bail!(
                             "prefetch: server returned unexpected HTTP status code {} for {}{}: {}",
@@ -894,12 +907,17 @@ impl<'cfg> RegistryData for HttpRegistry<'cfg> {
         debug!("fetch {}{}", self.url, path.display());
         handle.url(&format!("{}{}", self.url, path.display()))?;
 
+        let mut list = List::new();
         if let Some((ref etag, ref last_modified, _)) = was {
-            let mut list = List::new();
             list.append(&format!("If-None-Match: {}", etag))?;
             list.append(&format!("If-Modified-Since: {}", last_modified))?;
-            handle.http_headers(list)?;
         }
+
+        // If an authorization token is set, add it to the headers.
+        if let Some(ref auth_token) = self.token {
+            list.append(&format!("Authorization: {}", auth_token))?;
+        }
+        handle.http_headers(list)?;
 
         let mut contents = Vec::new();
         let mut etag = None;
